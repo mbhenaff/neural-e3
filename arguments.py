@@ -46,7 +46,7 @@ def get_args():
     parser.add_argument('-dqn_pos_reward_prob', type=float, default=0.1)
 #    parser.add_argument('-dqn_epochs', type=int, default=1500)
     parser.add_argument('-checkpoint_dqn', type=int, default=1)
-    parser.add_argument('-dqn_eval_ep', type=int, default=10)
+    parser.add_argument('-dqn_eval_ep', type=int, default=20)
     parser.add_argument('-rscale', type=float, default=1.0)
     config = parser.parse_args()
 
