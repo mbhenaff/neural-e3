@@ -134,8 +134,6 @@ def parse_args():
                         help="Data collection parameter for decoding algoithm.")
     parser.add_argument('--num_cluster', type=int, default = 3,
                         help="Num of hidden state parameter for decoding algoithm.")
-    parser.add_argument('--uniform_explore', type=int, default = 0,
-                        help="Uniform exploration")
     parser.add_argument('--antishaping', type=float, default = 0.0,
                         help="Antishaped Reward")
     args = parser.parse_args()
@@ -157,7 +155,6 @@ def train(env, alg, args):
     experiment_name += f'-nh={args.n_hidden}'
     experiment_name += f'-nup={args.n_model_updates}'
     experiment_name += f'-epexp={args.episodes_exp_ratio}'
-    experiment_name += f'-uexpl={args.uniform_explore}'
     experiment_name += f'-seed={args.seed}'
 
     print(f'will save as {experiment_name}')
@@ -191,13 +188,10 @@ def train(env, alg, args):
         ep_reward = 0
         while not done:
             state_visitation[:, level] += state[:3]
-            if args.uniform_explore == 1 and alg.mode == 'explore':
-                action = random.randint(0, 3)
+            if args.alg == 'neural-e3':
+                action = alg.select_action(state, level)
             else:
-                if args.alg == 'neural-e3':
-                    action = alg.select_action(state, level)
-                else:
-                    action = alg.select_action(state)
+                action = alg.select_action(state)
             next_state, reward, done, _ = env.step(action)
             if args.alg in ['neural-e3', 'uniform']:
                 alg.save_transition(state, action, reward, next_state, level)

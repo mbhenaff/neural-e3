@@ -50,7 +50,8 @@ class NeuralE3(object):
                                               orig_level = level)
             action = self.action_buffer[0]
             self.action_buffer = []
-#            self.action_buffer = self.action_buffer[1:]
+            # if deterministic, we could keep the rest of the action sequence around
+            #self.action_buffer = self.action_buffer[1:]
         else:
             action = random.randint(0, self.num_actions-1)
         return (action)
@@ -84,23 +85,12 @@ class NeuralE3(object):
             target_states_ = target_states[indx].cuda()
             target_rewards_ = target_rewards[indx].cuda()
             self.optimizer.zero_grad()
-            if False:
-                pred_next_states, pred_next_obs, pred_reward, _ = self.model(inputs_)
-                s_labels = target_states_[:, :3].max(1)[1]
-                x_labels = target_states_[:, 3:]
-                loss_s = F.nll_loss(pred_next_states, s_labels)
-                loss_x = F.binary_cross_entropy(pred_next_obs, x_labels)
-                loss_r = F.mse_loss(pred_reward, target_rewards_)
-                (loss_s + loss_x + loss_r).backward()
-            else:
-                pred_next_obs, pred_reward, _ = self.model(inputs_)
-                loss_x = F.binary_cross_entropy(pred_next_obs, target_states_)
-                loss_r = F.mse_loss(pred_reward, target_rewards_)
-                (loss_x + loss_r).backward()
-                
+            pred_next_obs, pred_reward, _ = self.model(inputs_)
+            loss_x = F.binary_cross_entropy(pred_next_obs, target_states_)
+            loss_r = F.mse_loss(pred_reward, target_rewards_)
+            (loss_x + loss_r).backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
             self.optimizer.step()
-#        print(f'state loss: {loss_s.item():.4f}, obs loss: {loss_x.item():.4f}')
 
     def finish_episode(self):
         for transition in self.traj:
