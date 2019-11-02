@@ -38,13 +38,10 @@ def get_args():
     parser.add_argument('-n_exploration_epochs', type=int, default=10)
     # DQN parameters
     parser.add_argument('-dqn_learning_rate', type=float, default=0.00003)
-#    parser.add_argument('-dqn_update_target_freq', type=int, default=10)
     parser.add_argument('-dqn_update_target_freq', type=int, default=5000)
     parser.add_argument('-dqn_grad_clip', type=float, default=1)
-#    parser.add_argument('-dqn_model_updates', type=int, default=500)
     parser.add_argument('-dqn_model_updates', type=int, default=750000)
     parser.add_argument('-dqn_pos_reward_prob', type=float, default=0.1)
-#    parser.add_argument('-dqn_epochs', type=int, default=1500)
     parser.add_argument('-checkpoint_dqn', type=int, default=1)
     parser.add_argument('-dqn_eval_ep', type=int, default=20)
     parser.add_argument('-rscale', type=float, default=1.0)

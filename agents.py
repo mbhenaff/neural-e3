@@ -41,8 +41,6 @@ class Agent(nn.Module):
 
     # perform rollout of an action sequence, returns prediction and uncertainty
     def rollout(self, state, actions):
-#        state = state.view(-1, self.config.n_input_frames, self.config.n_input_channels, self.config.height, self.config.width)
-#        state = self.phi_network(state.float().cuda())
         if self.config.input_type == 'features':
             state = state.view(-1, self.config.edim)
         u_list, s_list = [], []
@@ -143,20 +141,8 @@ class Agent(nn.Module):
         states, next_states, actions, rewards, returns, timesteps = [], [], [], [], [], []
         b = 0
         while b < batch_size:
-            # pick trajectory. If we have nonzero rewards in the buffer, sample them with decent prob
             ok = False
-            if nonzero_reward_only:
-                if random.random() < p_nonzero:
-                    rollout, indx = replay_memory.sample_nonzero_reward()
-                    states_, next_states_, actions_, rewards_, returns_, timesteps_ = rollout.sample_sequence(T)
-                    ok = True                
-                else:
-                    rollout = replay_memory.importance_sample(p=p_last, n = config.n_trajectories)
-                    if rollout.length >= T + config.n_input_frames:
-                        states_, next_states_, actions_, rewards_, returns_, timesteps_ = rollout.sample_sequence(T)
-                        ok = True
-                    
-            elif len(replay_memory.reward_indices) > 0 and random.random() < p_nonzero:
+            if len(replay_memory.reward_indices) > 0 and random.random() < p_nonzero:
                 rollout, indx = replay_memory.sample_nonzero_reward()
                 states_, next_states_, actions_, rewards_, returns_, timesteps_ = rollout.sample_sequence(T=T, t0 = indx.item() - T + 1)
                 ok = True
@@ -213,14 +199,6 @@ class Agent(nn.Module):
         losses['fwd_loss_s'] = F.mse_loss(states_pred, states_targets[:, 1:].contiguous().view(states_pred.size()))
         losses['fwd_loss_r'] = F.mse_loss(r_pred, rewards) * self.config.lambda_r
             
-
-        # record performance for positive and negative rewards
-        '''
-        r_pred_pos = r_pred[rewards.eq(config.rmax)].mean()
-        r_pred_neg = r_pred[rewards.eq(config.rmin)].mean()
-        metrics = {'r_pred_pos': r_pred_pos,
-                   'r_pred_neg': r_pred_neg}
-        '''
         metrics = {}
         return losses, metrics
     
@@ -231,7 +209,6 @@ class Agent(nn.Module):
             optimizer.zero_grad()
             self.zero_grad()
             self.dqn.zero_grad()
-#            states, _, actions, rewards, returns, timesteps = self.get_batch_from_replay_memory(self.replay_memory[goal][split], config, 2, config.batch_size, nonzero_reward_only=True, p_last=0.0, p_nonzero=config.dqn_pos_reward_prob)
             states, _, actions, rewards, returns, timesteps = self.get_batch_from_replay_memory(self.replay_memory[goal][split], config, 2, config.batch_size, nonzero_reward_only=False, p_last=0.0, p_nonzero=config.dqn_pos_reward_prob)
             states, next_states = states[:, 0].squeeze(), states[:, 1].squeeze()
             actions = actions[:, 0].max(1)[1]
@@ -249,43 +226,6 @@ class Agent(nn.Module):
                 logger.log(f'DQN training step {j}, loss: {numpy.mean(losses[-1000:]):.5f}')
         return numpy.mean(losses)
 
-    def train_policy_dqn_with_model(self, split, goal, optimizer, config, forward_model, n_updates = 100, reward_scale=1.0, grad_clip=10.0, nsteps=3):
-        total_loss, total_r = 0, 0
-        for j in range(n_updates):
-            # regular updates
-            optimizer.zero_grad()
-            self.zero_grad()
-            self.dqn.zero_grad()
-            states, _, actions, rewards, returns, timesteps = self.get_batch_from_replay_memory(self.replay_memory[goal][split], config, 2, config.batch_size, nonzero_reward_only=True, p_last=0.0, p_nonzero=0.1)
-            states, next_states = states[:, 0].squeeze(), states[:, 1].squeeze()
-            actions = actions[:, 0].max(1)[1]
-            rewards = rewards[:, 1] # TODO
-            terminals = rewards + 1.0 # TODO hardcoded
-            rewards = rewards * reward_scale
-            qvals, loss = self.dqn(states, actions, next_states, rewards, terminals)
-            loss.backward()
-            total_loss += loss.item()
-            total_r += rewards.sum().item()
-            torch.nn.utils.clip_grad_norm_(self.dqn.parameters(), grad_clip)
-            optimizer.step()
-            # model updates
-            optimizer.zero_grad()
-            self.zero_grad()
-            self.dqn.zero_grad()
-            states, _, actions, rewards, returns, timesteps = self.get_batch_from_replay_memory(self.replay_memory[goal][split], config, nsteps+1, config.batch_size, nonzero_reward_only=True, p_last=0.0, p_nonzero=0.1)
-            states, next_states = states[:, 0].squeeze(), states[:, 1].squeeze()
-            actions = actions[:, 0].max(1)[1]
-            rewards = rewards[:, 1] # TODO
-            terminals = rewards + 1.0 # TODO hardcoded
-            assert(terminals.sum() == 0)
-            rewards = rewards * reward_scale
-            qvals, loss = self.dqn.forward_nstep(states, actions, next_states, rewards, terminals, forward_model, nsteps=3)
-            loss.backward()
-            total_loss += loss.item()
-            total_r += rewards.sum().item()
-            torch.nn.utils.clip_grad_norm_(self.dqn.parameters(), grad_clip)
-            optimizer.step()
-        return total_loss / n_updates, total_r / n_updates
     
             
     def train_model(self, split, goal, optimizer, config, tensorboard, update=True):
@@ -293,10 +233,8 @@ class Agent(nn.Module):
         loss_terms = {}
         metrics_terms = {}
         for i in range(config.n_model_updates):
-            # Update the policy and version space
             optimizer.zero_grad()
             self.zero_grad()
-            #batch_size = config.batch_size if update else 100
             batch_size = config.batch_size
             losses, metrics = self.calc_loss(replay_memory, config, batch_size)
             loss = 0
@@ -378,6 +316,4 @@ class Agent(nn.Module):
             ep_length.append(step)
         ep_reward = numpy.mean(ep_reward)
         ep_length = numpy.mean(ep_length)
-#        summary = {'reward': torch.tensor(ep_reward).mean(),
-#                   'stats': stats}
         return ep_reward, ep_length

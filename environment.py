@@ -12,20 +12,8 @@ class EnvironmentWrapper:
             self.env = gym.make('MountainCar-v0')
         elif config.env == 'acrobot':
             self.env = gym.make('Acrobot-v1')
-        elif config.env == 'acrobotsp1':
-            self.env = gym.make('Acrobot-v1')
-            def _terminal(env):
-                s = self.state
-                return bool(-np.cos(s[0]) - np.cos(s[1] + s[0]) > 1.25)
-        elif config.env == 'acrobotsp2':
-            self.env = gym.make('Acrobot-v1')
-            def _terminal(env):
-                s = self.state
-                return bool(-np.cos(s[0]) - np.cos(s[1] + s[0]) > 1.5)
         elif 'maze' in config.env:
             self.env = maze.MazeEnv(size=config.maze_size, time=100, holes=0, num_goal=1)
-        elif 'montezuma-ram' in config.env:
-            self.env = gym.make('MontezumaRevenge-ram-v4')
         self.state_buffer = []
         self.reward_buffer = []
         self.counter = 0
@@ -44,10 +32,6 @@ class EnvironmentWrapper:
             s = (s - self.smin) / (self.smax - self.smin)
         elif 'maze' in self.config.env:
             s = torch.from_numpy(s).permute(2, 0, 1).clone().float()
-        elif 'montezuma-ram' in self.config.env:
-            s_ = [s[3], s[42], s[43], s[52], s[27], s[83], s[0], s[55], s[67], s[47]]
-            s_ = [float(x) for x in s_]
-            s = torch.tensor(s_).float() / 255.0
         return s 
 
 
@@ -128,23 +112,6 @@ def add_constants(config):
         config.rmin = -1.0
         config.rmax = 0.0
         config.input_type = 'features'
-    elif 'montezuma-ram' in config.env:
-        config.n_input_channels = 10
-        config.n_input_frames = 1
-        config.n_actions = 18
-        config.height = 1
-        config.width = 1
-        config.edim = 10
-        config.image_subsample = 1
-        config.phi_layer_size = 10
-        config.n_action_repeat = 4
-        config.phi='none'
-        config.spherenorm = 0
-        config.learn_radius = 0
-        config.rmin = 0.0
-        config.rmax = 1.0
-        config.input_type = 'features'
-        config.max_exploration_steps = 10000
     else:
         ValueError
     return config

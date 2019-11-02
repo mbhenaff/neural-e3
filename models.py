@@ -141,7 +141,6 @@ class EnsembleLinearGPU(nn.Module):
     def reset_parameters(self):
         for weight in self.weights:
             w = nn.Linear(self.in_features, self.out_features)
-#            weight.data.copy_(w.weight.data)
             torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
             torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
         if self.biases is not None:
@@ -249,32 +248,7 @@ class DQN(nn.Module):
     def sync_networks(self):
         self.q_network2.load_state_dict(self.q_network.state_dict())
 
-    def forward_nstep(self, states, actions=None, next_states=None, rewards=None, terminals=None, forward_model=None, nsteps=3):
-        bsize = states.size(0)
-        q = self.q_network(states)
-        if actions is None:
-            return q, None
-        else:
-            q = q[self.batch_indices, actions]
-            values = torch.zeros(bsize).cuda()
-            values.add_(rewards)
-            s = next_states
-            for n in range(nsteps):
-                a = torch.argmax(self.q_network(s), dim=-1)
-                a = torch.stack([utils.one_hot(a_i, self.config.n_actions) for a_i in a]).squeeze()
-                s_pred, r_pred, _ = forward_model.forward(s, a) # TODO could pass each sample through all models and average
-                values = values + (self.config.gamma**(n+1))*r_pred
-                s = s_pred.detach()
-            a = torch.argmax(self.q_network(s), dim=-1)
-            q_next = self.q_network2(s).detach()            
-            q_next = q_next[self.batch_indices, a]
-            values = values + self.config.gamma**(nsteps+1)*q_next
-            loss = F.smooth_l1_loss(q, values.detach())
-            return q, loss
                 
-                
-            
-        
     def forward(self, states, actions=None, next_states=None, rewards=None, terminals=None):
         q = self.q_network(states)
         if actions is None:
@@ -290,6 +264,3 @@ class DQN(nn.Module):
             q_next.add_(rewards)
             loss = F.smooth_l1_loss(q, q_next)
             return q, loss
-
-
-

@@ -84,28 +84,6 @@ def precision_at_k(scores, labels, k=5, dim=1):
     return matches.float().sum().item() / b
     
 
-def scatter(data, k=None, size=(80, 80, 3)):
-    x = data[:, 0]
-    y = data[:, 1]
-    # convert to pixel coordinates
-    x = x - x.min()
-    x = x / x.max()
-    x = x * (size[0]-1)
-    y = y - y.min()
-    y = y / y.max()
-    y = y * (size[1]-1)
-    n = data.shape[0]
-    img = numpy.zeros(size)
-    for i in range(n):
-        img[int(round(x[i]))][int(round(y[i]))][0] = 0.5
-        img[int(round(x[i]))][int(round(y[i]))][1] = 0.5
-        img[int(round(x[i]))][int(round(y[i]))][2] = 0.5
-
-    if k is not None:
-        img[int(round(x[k]))][int(round(y[k]))][0] = 1
-        img[int(round(x[k]))][int(round(y[k]))][1] = 0
-        img[int(round(x[k]))][int(round(y[k]))][2] = 0
-    return img
 
 
 # simple logger

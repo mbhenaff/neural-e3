@@ -17,7 +17,6 @@ class UniformExploration:
         a = random.randint(0, self.num_actions - 1)
         return [a], None, None, 0, None
 
-
             
 class ParticleSearch2:
     def __init__(self, config):
@@ -40,7 +39,6 @@ class ParticleSearch2:
 
         # vertices will be [n_vertices x n_particles x state_dim]
         if self.config.phi != 'learned':
-#            state = model.phi_network(state.float().cuda()).view(1, model.config.edim)
             state = state.float().cuda().view(1, model.config.edim)
             vertices = state.detach().unsqueeze(1).repeat(1, model.config.n_ensemble, 1)
         else:
@@ -144,71 +142,3 @@ class ParticleSearch2:
                 path = [random.randint(0, model.config.n_actions-1)]
             print(f'returning (r={max_r:.6f} < eps={model.config.rmax:.6f}) after {max_steps} tries, a=' + str(path) + f' |a|={len(path)+1}')
         return path, None, None, exit_cond, vertices.detach()
-    
-
-
-    
-
-def VoronoiSearchTruth(env, n_actions=3, rmax=-0.5,max_steps=5000):
-    paths, expanded_vertices = [], []
-    returns_r, returns_u = [], []
-    # vertices will be [n_vertices x n_particles x state_dim]
-    env.reset()
-    vertices = [env]
-    paths.append([])
-    returns_r.append(0.0)
-    returns_u.append(0.0)
-    # these will store uncertainty values and actions
-    u_list, a_list = [], []
-    exit_cond = 0
-    done = False
-        
-    for i in range(max_steps):
-        # compute similarity matrix between vertices
-        states = torch.tensor([e.state for e in vertices]).float()
-        sim = -torch.sum((states.unsqueeze(0) - states.unsqueeze(1))**2, 2)
-        n_vertices = len(vertices)
-        if n_vertices % 500 == 0:
-            print(f'[expanded {n_vertices} vertices]')
-        if n_vertices > 50000: break
-            
-        # for each vertex, get the closeness of its nearest neighbor (excluding itself)
-        nn_sim = torch.max(sim - 1000*torch.eye(n_vertices), 1)[0]
-        # sort vertices by size of voronoi region
-        indx = torch.sort(nn_sim, descending=False)[1].cpu().numpy().tolist()
-        # remove any vertices which were previously expanded
-        indx = [x for x in indx if x not in expanded_vertices]
-        k = indx[0]
-        expanded_vertices.append(k)
-        vertex, path, ret_r = vertices[k], paths[k], returns_r[k]
-        actions = numpy.random.permutation(n_actions)
-        for a in actions:
-            next_vertex = copy.deepcopy(vertex)
-            s_pred, r_pred, _, info = next_vertex.step(a)
-            a_list.append(a)
-            ret_r_pred = r_pred + ret_r
-            path_length = len(path)+1
-            if ret_r_pred / path_length > rmax:
-                print(f'found (r={ret_:.6f}) after {len(u_list)} tries, a=' + str(path + [a]))
-                exit_cond = 2
-                done = True
-            if done:                    
-                path = path + [a]
-                # compute state sequence
-                s = vertices[0]
-                pdb.set_trace()
-                return path, s_seq, u_seq, exit_cond, vertices.detach()
-            else:
-                vertices.append(copy.deepcopy(next_vertex))
-                paths.append(path + [a])
-                returns_r.append(ret_r_pred)
-    path_lengths = torch.tensor([len(p) for p in paths]).float()
-    returns_u[0]=-math.inf
-    returns_r[0]=-math.inf
-    returns_r = torch.tensor(returns_r) / path_lengths
-    max_r, max_r_indx = returns_r.max(0)
-    path = paths[max_r_indx]
-    if len(path) == 0:
-        path = [random.randint(0, model.config.n_actions-1)]
-    print(f'returning (r={max_r:.6f} < eps={model.config.rmax:.6f}) after {len(u_list)} tries, a=' + str(path))
-    return path, None, None, exit_cond, vertices.detach()
