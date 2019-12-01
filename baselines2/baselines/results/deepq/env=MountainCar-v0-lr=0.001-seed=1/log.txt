@@ -1,0 +1,1 @@
+Logging to ./results/deepq/env=MountainCar-v0-lr=0.001-seed=1

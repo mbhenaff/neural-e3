@@ -1,0 +1,439 @@
+diff --git deep_rl/agent/A2C_agent.py deep_rl/agent/A2C_agent.py
+index 7221913..e58d6ef 100644
+--- deep_rl/agent/A2C_agent.py
++++ deep_rl/agent/A2C_agent.py
+@@ -7,7 +7,7 @@
+ from ..network import *
+ from ..component import *
+ from .BaseAgent import *
+-
++import pdb
+ 
+ class A2CAgent(BaseAgent):
+     def __init__(self, config):
+@@ -19,6 +19,26 @@ class A2CAgent(BaseAgent):
+         self.total_steps = 0
+         self.states = self.task.reset()
+ 
++        if config.rnd == 1:
++            self.rnd_network = nn.Sequential(nn.Linear(config.state_dim, 100),
++                                             nn.ReLU(),
++                                             nn.Linear(100, 100),
++                                             nn.ReLU(),
++                                             nn.Linear(100, 100)).cuda()
++
++            self.rnd_pred_network = nn.Sequential(nn.Linear(config.state_dim, 100),
++                                                  nn.ReLU(),
++                                                  nn.Linear(100, 100),
++                                                  nn.ReLU(),
++                                                  nn.Linear(100, 100)).cuda()
++            self.rnd_optimizer = config.optimizer_fn(self.rnd_pred_network.parameters())
++        
++
++    def eval_step(self, state):
++        prediction = self.network(self.config.state_normalizer(state))
++        action = to_np(prediction['a'])
++        return action
++
+     def step(self):
+         config = self.config
+         storage = Storage(config.rollout_length)
+@@ -26,6 +46,19 @@ class A2CAgent(BaseAgent):
+         for _ in range(config.rollout_length):
+             prediction = self.network(config.state_normalizer(states))
+             next_states, rewards, terminals, info = self.task.step(to_np(prediction['a']))
++
++            if config.rnd == 1:
++                self.rnd_optimizer.zero_grad()
++                s = torch.from_numpy(config.state_normalizer(states)).cuda().float()
++                rnd_target = self.rnd_network(s).detach()
++                rnd_pred = self.rnd_pred_network(s)
++                rnd_loss = F.mse_loss(rnd_pred, rnd_target, reduction='none').mean(1)
++                (rnd_loss.mean()).backward()
++                self.rnd_optimizer.step()
++                rewards += config.rnd_bonus*rnd_loss.detach().cpu().numpy()
++                
++
++            
+             self.record_online_return(info)
+             rewards = config.reward_normalizer(rewards)
+             storage.add(prediction)
+diff --git deep_rl/agent/BaseAgent.py deep_rl/agent/BaseAgent.py
+index 875fcd8..a3da974 100644
+--- deep_rl/agent/BaseAgent.py
++++ deep_rl/agent/BaseAgent.py
+@@ -15,8 +15,9 @@ from skimage.io import imsave
+ class BaseAgent:
+     def __init__(self, config):
+         self.config = config
+-        self.logger = get_logger(tag=config.tag, log_level=config.log_level)
++        self.logger = get_logger(tag=config.tag, log_level=config.log_level, log_dir = config.log_dir)
+         self.task_ind = 0
++        self.cumulative_reward = 0
+ 
+     def close(self):
+         close_obj(self.task)
+@@ -63,8 +64,10 @@ class BaseAgent:
+         if isinstance(info, dict):
+             ret = info['episodic_return']
+             if ret is not None:
++                self.cumulative_reward += ret
+                 self.logger.add_scalar('episodic_return_train', ret, self.total_steps + offset)
+-                self.logger.info('steps %d, episodic_return_train %s' % (self.total_steps + offset, ret))
++#                self.logger.info('steps %d, episodic_return_train %s' % (self.total_steps + offset, ret))
++                self.logger.add_scalar('cumulative_reward', self.cumulative_reward, self.total_steps + offset)
+         elif isinstance(info, tuple):
+             for i, info_ in enumerate(info):
+                 self.record_online_return(info_, i)
+diff --git deep_rl/agent/DQN_agent.py deep_rl/agent/DQN_agent.py
+index 8610640..3ca3e7e 100644
+--- deep_rl/agent/DQN_agent.py
++++ deep_rl/agent/DQN_agent.py
+@@ -9,7 +9,7 @@ from ..component import *
+ from ..utils import *
+ import time
+ from .BaseAgent import *
+-
++import pdb
+ 
+ class DQNActor(BaseActor):
+     def __init__(self, config):
+@@ -18,20 +18,37 @@ class DQNActor(BaseActor):
+         self.start()
+ 
+     def _transition(self):
++        multi_env = not self.config.num_workers == 1
+         if self._state is None:
+             self._state = self._task.reset()
+         config = self.config
+         with config.lock:
+             q_values = self._network(config.state_normalizer(self._state))
+-        q_values = to_np(q_values).flatten()
++        if multi_env:
++            q_values = to_np(q_values)
++        else:
++            q_values = to_np(q_values).flatten()
+         if self._total_steps < config.exploration_steps \
+                 or np.random.rand() < config.random_action_prob():
+-            action = np.random.randint(0, len(q_values))
++            if multi_env:
++                action = [np.random.randint(0, q_values.shape[1]) for i in range(q_values.shape[0])]
++            else:
++                action = np.random.randint(0, len(q_values))
+         else:
+-            action = np.argmax(q_values)
+-        next_state, reward, done, info = self._task.step([action])
+-        entry = [self._state[0], action, reward[0], next_state[0], int(done[0]), info]
+-        self._total_steps += 1
++            if multi_env:
++                action = np.argmax(q_values, axis=1)
++            else:
++                action = np.argmax(q_values)
++        if multi_env:
++            next_state, reward, done, info = self._task.step(action)
++#            entry = [self._state, action, reward, next_state, done, info]
++            entry = [self._state, action, reward, next_state, done, info]
++            self._total_steps += len(action)
++#            self._total_steps += q_values.shape[0]
++        else:
++            next_state, reward, done, info = self._task.step([action])
++            entry = [self._state[0], action, reward[0], next_state[0], int(done[0]), info]
++            self._total_steps += 1
+         self._state = next_state
+         return entry
+ 
+@@ -72,9 +89,24 @@ class DQNAgent(BaseAgent):
+         config = self.config
+         transitions = self.actor.step()
+         experiences = []
++        multi_env = not config.num_workers == 1
++        self.total_steps += config.num_workers
++        if multi_env:
++            transitions_ = []
++            for i in range(config.num_workers):
++                transition_ = [transitions[0][j][i] for j in range(6)]
++                transitions_.append(transition_)
++            transitions = transitions_
++
++#        self.total_steps += self.config.num_workers
+         for state, action, reward, next_state, done, info in transitions:
+             self.record_online_return(info)
+-            self.total_steps += 1
++            '''
++            if multi_env and False:
++                self.total_steps += len(state)
++            else:
++                self.total_steps += 1
++            '''
+             reward = config.reward_normalizer(reward)
+             experiences.append([state, action, reward, next_state, done])
+         self.replay.feed_batch(experiences)
+@@ -82,16 +114,30 @@ class DQNAgent(BaseAgent):
+         if self.total_steps > self.config.exploration_steps:
+             experiences = self.replay.sample()
+             states, actions, rewards, next_states, terminals = experiences
+-            states = self.config.state_normalizer(states)
+-            next_states = self.config.state_normalizer(next_states)
+-            q_next = self.target_network(next_states).detach()
++
++            if multi_env:
++                states = self.config.state_normalizer(states).squeeze()
++                next_states = self.config.state_normalizer(next_states).squeeze()
++                q_next = self.target_network(next_states).detach()
++            else:
++                states = self.config.state_normalizer(states)
++                next_states = self.config.state_normalizer(next_states)
++                q_next = self.target_network(next_states).detach()
++                
+             if self.config.double_q:
+                 best_actions = torch.argmax(self.network(next_states), dim=-1)
+                 q_next = q_next[self.batch_indices, best_actions]
+             else:
+                 q_next = q_next.max(1)[0]
+-            terminals = tensor(terminals)
+-            rewards = tensor(rewards)
++
++
++            if multi_env:
++                terminals = tensor(terminals).squeeze()
++                rewards = tensor(rewards).squeeze()
++            else:
++                terminals = tensor(terminals)
++                rewards = tensor(rewards)
++                
+             q_next = self.config.discount * q_next * (1 - terminals)
+             q_next.add_(rewards)
+             actions = tensor(actions).long()
+diff --git deep_rl/agent/PPO_agent.py deep_rl/agent/PPO_agent.py
+index 0103729..bb0941b 100644
+--- deep_rl/agent/PPO_agent.py
++++ deep_rl/agent/PPO_agent.py
+@@ -20,6 +20,22 @@ class PPOAgent(BaseAgent):
+         self.states = self.task.reset()
+         self.states = config.state_normalizer(self.states)
+ 
++        if config.rnd == 1:
++            n_hidden = 500
++            self.rnd_network = nn.Sequential(nn.Linear(config.state_dim, n_hidden),
++                                             nn.ReLU(),
++                                             nn.Linear(n_hidden, n_hidden),
++                                             nn.ReLU(),
++                                             nn.Linear(n_hidden, n_hidden)).cuda()
++
++            self.rnd_pred_network = nn.Sequential(nn.Linear(config.state_dim, n_hidden),
++                                                  nn.ReLU(),
++                                                  nn.Linear(n_hidden, n_hidden),
++                                                  nn.ReLU(),
++                                                  nn.Linear(n_hidden, n_hidden)).cuda()
++            self.rnd_optimizer = config.optimizer_fn(self.rnd_pred_network.parameters())
++        
++
+     def step(self):
+         config = self.config
+         storage = Storage(config.rollout_length)
+@@ -27,6 +43,17 @@ class PPOAgent(BaseAgent):
+         for _ in range(config.rollout_length):
+             prediction = self.network(states)
+             next_states, rewards, terminals, info = self.task.step(to_np(prediction['a']))
++
++            if config.rnd == 1:
++                self.rnd_optimizer.zero_grad()
++                s = torch.from_numpy(config.state_normalizer(states)).cuda().float()
++                rnd_target = self.rnd_network(s).detach()
++                rnd_pred = self.rnd_pred_network(s)
++                rnd_loss = F.mse_loss(rnd_pred, rnd_target, reduction='none').mean(1)
++                (rnd_loss.mean()).backward()
++                self.rnd_optimizer.step()
++                rewards += config.rnd_bonus*rnd_loss.detach().cpu().numpy()
++            
+             self.record_online_return(info)
+             rewards = config.reward_normalizer(rewards)
+             next_states = config.state_normalizer(next_states)
+@@ -69,6 +96,17 @@ class PPOAgent(BaseAgent):
+                 sampled_returns = returns[batch_indices]
+                 sampled_advantages = advantages[batch_indices]
+ 
++
++                if config.rnd == 1:
++                    self.rnd_optimizer.zero_grad()
++                    s = config.state_normalizer(sampled_states).cuda().float()
++                    rnd_target = self.rnd_network(s).detach()
++                    rnd_pred = self.rnd_pred_network(s)
++                    rnd_loss = F.mse_loss(rnd_pred, rnd_target, reduction='none').mean(1)
++                    (rnd_loss.mean()).backward()
++                    self.rnd_optimizer.step()
++                
++
+                 prediction = self.network(sampled_states, sampled_actions)
+                 ratio = (prediction['log_pi_a'] - sampled_log_probs_old).exp()
+                 obj = ratio * sampled_advantages
+diff --git deep_rl/component/envs.py deep_rl/component/envs.py
+index 2a575d6..1faa330 100644
+--- deep_rl/component/envs.py
++++ deep_rl/component/envs.py
+@@ -8,6 +8,7 @@ import os
+ import gym
+ import numpy as np
+ import torch
++import json, pdb
+ from gym.spaces.box import Box
+ from gym.spaces.discrete import Discrete
+ 
+@@ -22,12 +23,38 @@ try:
+ except ImportError:
+     pass
+ 
++import baselines.homer as homer
++import baselines.homer.environment_wrapper as envwrap
++
++
++
++
++
++def build_env_homer(horizon=10):
++    # constant file contains hyperparameters for the model and learning algorithm.
++    with open("baselines/homer/data/diabcombolock/config.json") as f:
++        config = json.load(f)
++        config["horizon"] = horizon
++        config["noise"] = 'hadamhardg'
++        envwrap.GenerateEnvironmentWrapper.adapt_config_to_domain('diabcombolock', config)
++    print(json.dumps(config, indent=2))
++    envwrap.GenerateEnvironmentWrapper.adapt_config_to_domain('diabcombolock', config)
++    env = envwrap.GenerateEnvironmentWrapper('diabcombolock', config)
++    env.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(config["obs_dim"],),dtype=np.float)
++    env.action_space = gym.spaces.Discrete(10)
++    env.reward_range = gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float)
++    env.metadata = None
++    return env
++
++
+ 
+ # adapted from https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/envs.py
+-def make_env(env_id, seed, rank, episode_life=True):
++def make_env(env_id, seed, rank, episode_life=True, horizon=4):
+     def _thunk():
+         random_seed(seed)
+-        if env_id.startswith("dm"):
++        if 'diabcombolock' in env_id:
++            env = build_env_homer(horizon=horizon)
++        elif env_id.startswith("dm"):
+             import dm_control2gym
+             _, domain, task = env_id.split('-')
+             env = dm_control2gym.make(domain_name=domain, task_name=task)
+@@ -37,7 +64,8 @@ def make_env(env_id, seed, rank, episode_life=True):
+             env.unwrapped, gym.envs.atari.atari_env.AtariEnv)
+         if is_atari:
+             env = make_atari(env_id)
+-        env.seed(seed + rank)
++        if not 'diabcombolock' in env_id:
++            env.seed(seed + rank)
+         env = OriginalReturnWrapper(env)
+         if is_atari:
+             env = wrap_deepmind(env,
+@@ -157,10 +185,15 @@ class Task:
+                  single_process=True,
+                  log_dir=None,
+                  episode_life=True,
+-                 seed=np.random.randint(int(1e5))):
++                 seed=np.random.randint(int(1e5)),
++                 horizon=10):
+         if log_dir is not None:
+             mkdir(log_dir)
+-        envs = [make_env(name, seed, i, episode_life) for i in range(num_envs)]
++        if name == 'diabcombolock':
++            env = make_env(name, seed, 0, episode_life, horizon=horizon)
++            envs = [env for i in range(num_envs)]
++        else:
++            envs = [make_env(name, seed, i, episode_life) for i in range(num_envs)]
+         if single_process:
+             Wrapper = DummyVecEnv
+         else:
+diff --git deep_rl/utils/logger.py deep_rl/utils/logger.py
+index d6485b5..d03516c 100644
+--- deep_rl/utils/logger.py
++++ deep_rl/utils/logger.py
+@@ -14,15 +14,15 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s: %(message)s'
+ from .misc import *
+ 
+ 
+-def get_logger(tag='default', log_level=0):
++def get_logger(tag='default', log_level=0, log_dir='./log/'):
+     logger = logging.getLogger()
+     logger.setLevel(logging.INFO)
+     if tag is not None:
+-        fh = logging.FileHandler('./log/%s-%s.txt' % (tag, get_time_str()))
++        fh = logging.FileHandler('%s/%s-%s.txt' % (log_dir, tag, get_time_str()))
+         fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s: %(message)s'))
+         fh.setLevel(logging.INFO)
+         logger.addHandler(fh)
+-    return Logger(logger, './tf_log/logger-%s-%s' % (tag, get_time_str()), log_level)
++    return Logger(logger, '%s/logger-%s-%s' % (log_dir, tag, get_time_str()), log_level)
+ 
+ 
+ class Logger(object):
+diff --git deep_rl/utils/misc.py deep_rl/utils/misc.py
+index 6a731ab..f452e49 100644
+--- deep_rl/utils/misc.py
++++ deep_rl/utils/misc.py
+@@ -10,9 +10,20 @@ import os
+ import datetime
+ import torch
+ import time
++import pdb, pickle, os
+ from .torch_utils import *
+ from pathlib import Path
+ 
++def logtxt(fname, s, date=True):
++    if not os.path.isdir(os.path.dirname(fname)):
++        os.system(f'mkdir -p {os.path.dirname(fname)}')
++    f = open(fname, 'a')
++    if date:
++        f.write(f'{str(datetime.datetime.now())}: {s}\n')
++    else:
++        f.write(f'{s}\n')
++    f.close()
++
+ 
+ def run_steps(agent):
+     config = agent.config
+@@ -21,8 +32,11 @@ def run_steps(agent):
+     while True:
+         if config.save_interval and not agent.total_steps % config.save_interval:
+             agent.save('data/%s-%s-%d' % (agent_name, config.tag, agent.total_steps))
+-        if config.log_interval and not agent.total_steps % config.log_interval:
+-            agent.logger.info('steps %d, %.2f steps/s' % (agent.total_steps, config.log_interval / (time.time() - t0)))
++        if agent.total_steps > 0 and config.log_interval and not agent.total_steps % config.log_interval:
++            mean_reward = agent.cumulative_reward / (agent.total_steps / config.horizon)
++            log_string = 'steps %d, episodes %d, %.2f steps/s, total rew %.2f, mean rew %.2f' % (agent.total_steps, agent.total_steps / config.horizon, config.log_interval / (time.time() - t0), agent.cumulative_reward, mean_reward)
++            agent.logger.info(log_string)
++            logtxt(agent.logger.log_dir + '.txt', log_string)
+             t0 = time.time()
+         if config.eval_interval and not agent.total_steps % config.eval_interval:
+             agent.eval_episodes()
+@@ -31,6 +45,10 @@ def run_steps(agent):
+             break
+         agent.step()
+         agent.switch_task()
++#    traj = agent.actor._task.env.envs[0].trajectories
++    traj = agent.task.env.envs[0].trajectories
++    traj_file = agent.logger.log_dir + '.traj'
++    pickle.dump(traj, open(traj_file, 'wb'))
+ 
+ 
+ def get_time_str():
+diff --git deep_rl/utils/normalizer.py deep_rl/utils/normalizer.py
+index 2160012..bfe37ec 100644
+--- deep_rl/utils/normalizer.py
++++ deep_rl/utils/normalizer.py
+@@ -58,6 +58,9 @@ class RescaleNormalizer(BaseNormalizer):
+     def __call__(self, x):
+         if not isinstance(x, torch.Tensor):
+             x = np.asarray(x)
+-        return self.coef * x
++        if self.coef == 1.0:
++            return x
++        else:
++            return self.coef * x
+ 
+ 
+ class ImageNormalizer(RescaleNormalizer):
