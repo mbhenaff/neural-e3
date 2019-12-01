@@ -4,6 +4,54 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+
+class DQN(nn.Module):
+    def __init__(self, params):
+        super(DQN, self).__init__()
+        self.params = params
+        self.n_inputs = 3 + params['dimension'] + params['horizon']
+        self.q_network = nn.Sequential(
+            nn.Linear(self.n_inputs, params['n_hidden']),
+            nn.ReLU(),
+            nn.Linear(params['n_hidden'], params['n_hidden']),
+            nn.ReLU(),
+            nn.Linear(params['n_hidden'], params['n_actions'])
+        )
+
+        self.q_network2 = nn.Sequential(
+            nn.Linear(self.n_inputs, params['n_hidden']),
+            nn.ReLU(),
+            nn.Linear(params['n_hidden'], params['n_hidden']),
+            nn.ReLU(),
+            nn.Linear(params['n_hidden'], params['n_actions'])
+        )
+
+        self.sync_networks()
+        self.batch_indices = torch.arange(0, self.params['batch_size']).long()
+
+    def sync_networks(self):
+        self.q_network2.load_state_dict(self.q_network.state_dict())
+
+                
+    def forward(self, states, actions=None, next_states=None, rewards=None, terminals=None):
+        q = self.q_network(states)
+        if actions is None:
+            return q, None
+        else:
+            q = q[self.batch_indices, actions]
+            q_next = self.q_network2(next_states).detach()
+            q_next = q_next
+            # Double DQN
+            best_actions = torch.argmax(self.q_network(next_states), dim=-1)
+            q_next = q_next[self.batch_indices, best_actions]
+            q_next = q_next*0.99*(1-terminals)
+            q_next.add_(rewards)
+            loss = F.smooth_l1_loss(q, q_next)
+            return q, loss
+
+
+
+
 class ForwardModel(nn.Module):
 
     def __init__(self, params):
@@ -16,51 +64,36 @@ class ForwardModel(nn.Module):
                                    EnsembleLinearGPU(params['n_hidden'], params['dimension'] + 3 + 1, params['n_ensemble']),
                                    )
 
+        if params['anchor'] == 1:
+            self.model2 = nn.Sequential(EnsembleLinearGPU(3 + params['dimension'] + params['n_actions'] + params['horizon'], params['n_hidden'], params['n_ensemble']),
+                                       nn.ReLU(),
+                                       EnsembleLinearGPU(params['n_hidden'], params['n_hidden'], params['n_ensemble']),
+                                       nn.ReLU(),
+                                       EnsembleLinearGPU(params['n_hidden'], params['dimension'] + 3 + 1, params['n_ensemble']),
+            )
 
 
     def forward(self, x, n_samples=0):
         batch_size = x.size(0)
         out = self.model(x)
         out = out.view(out.size(0)*out.size(1), -1)
-        out = torch.sigmoid(out)
-        x_next = out[:, :-1]
+
+        if self.params['anchor'] == 1:
+            out2 = self.model(x).detach()
+            out2 = out2.view(out2.size(0)*out2.size(1), -1)
+            out = out + out2
+            
+        x_next = torch.sigmoid(out[:, :-1])
         r = out[:, -1]        
         if n_samples > 0:
             z = torch.rand(n_samples, x_next.size(0), x_next.size(1)).cuda()
             x_next_rep = x_next.unsqueeze(0).repeat(n_samples, 1, 1)
             x_next_samples = (z < x_next_rep).float()
-#            x_next_samples = (z > x_next_rep).float()
             x_next_samples = x_next_samples.view(n_samples, batch_size, -1)
             samples = x_next_samples.squeeze()
         else:
             samples = None
         return x_next, r, samples
-
-
-    '''
-    def forward(self, x, n_samples=0):
-        batch_size = x.size(0)
-        out = self.model(x)
-        out = out.view(out.size(0)*out.size(1), -1)
-        s_next = F.log_softmax(out[:, :3])
-        x_next = torch.sigmoid(out[:, 3:-1])
-        r = out[:, -1]
-        
-#        r = torch.sigmoid(out[:, -1])
-        if n_samples > 0:
-            z = torch.rand(n_samples, x_next.size(0), x_next.size(1)).cuda()
-            x_next_rep = x_next.unsqueeze(0).repeat(n_samples, 1, 1)
-            x_next_samples = (z > x_next_rep).float()
-            x_next_samples = x_next_samples.view(n_samples, batch_size, -1)
-            s_next_samples_indx = torch.multinomial(torch.exp(s_next), num_samples=n_samples)
-            s_next_samples = torch.zeros(s_next_samples_indx.size(0), 3).cuda()
-            s_next_samples.scatter_(1, s_next_samples_indx, 1)
-            s_next_samples = s_next_samples.view(n_samples, batch_size, -1)
-            samples = torch.cat((s_next_samples, x_next_samples), 2).squeeze()
-        else:
-            samples = None
-        return s_next, x_next, r, samples
-    '''
 
 
 

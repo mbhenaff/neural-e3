@@ -1,5 +1,6 @@
 import numpy as np
 import gym
+import random, pdb
 from gym.spaces import MultiBinary, Discrete, Box
 
 class LockBernoulli(gym.Env):
@@ -20,6 +21,8 @@ class LockBernoulli(gym.Env):
 
         if 'antishaping' in env_config.keys():
             self.antishaping = float(env_config['antishaping'])
+        else:
+            self.antishaping = 0
             
         self.dimension=0
         if 'dimension' in env_config.keys():
@@ -41,11 +44,8 @@ class LockBernoulli(gym.Env):
         if 'switch' in env_config.keys():
             self.switch = float(env_config['switch'])
 
-#        self.opt_a = gym.spaces.np_random.randint(low=0, high=self.action_space.n, size=self.horizon)
-#        self.opt_b = gym.spaces.np_random.randint(low=0, high=self.action_space.n, size=self.horizon)
-# TODO fix
-        self.opt_a = np.random.randint(low=0, high=self.action_space.n, size=self.horizon)
-        self.opt_b = np.random.randint(low=0, high=self.action_space.n, size=self.horizon)
+        self.opt_a = self.rng.randint(low=0, high=self.action_space.n, size=self.horizon)
+        self.opt_b = self.rng.randint(low=0, high=self.action_space.n, size=self.horizon)
         print("[LOCK] Initializing Combination Lock Environment")
         print("[LOCK] A sequence: ", end="")
         print([z for z in self.opt_a], end=", ")
@@ -61,35 +61,36 @@ class LockBernoulli(gym.Env):
             raise Exception("[LOCK] Exceeded horizon")
 
         r = 0
-        # TODO
-        rtmp = np.random.binomial(1,0.5)
         next_state = None
         ## First check for end of episode
         if self.h == self.horizon-1:
             ## Done with episode, need to compute reward
             if self.state == 0 and action == self.opt_a[self.h]:
                 next_state = 0
-                r = rtmp
+                r = 5
             elif self.state == 0 and action == (self.opt_a[self.h]+1) % 4:
                 next_state = 1
-                r = rtmp
+                r = 5
             elif self.state == 1 and action == self.opt_b[self.h]:
                 next_state = 1
-                r = rtmp
+                r = 5
             elif self.state == 1 and action == (self.opt_b[self.h]+1) % 4:
                 next_state = 0
-                r = rtmp
+                r = 5
             else:
                 next_state = 2
+                r = 0
             self.h +=1
             self.state = next_state
             obs = self.make_obs(self.state)
             return obs, r, True, {}
 
-        # TODO
         ber = np.random.binomial(1, self.switch)
         ## Decode current state
-        r = 0
+        if self.antishaping > 0:
+            r = -1.0/self.horizon
+        else:
+            r = 0
         if self.state == 0:
             ## In state A
             if action == self.opt_a[self.h]:
@@ -104,7 +105,7 @@ class LockBernoulli(gym.Env):
                     next_state = 1
             else:
                 next_state = 2
-                r += self.antishaping
+                r = self.antishaping
         elif self.state == 1:
             ## In state B
             if action == self.opt_b[self.h]:
@@ -119,10 +120,11 @@ class LockBernoulli(gym.Env):
                     next_state = 0
             else:
                 next_state = 2
-                r += self.antishaping
+                r = self.antishaping
         else:
             ## In state C
             next_state = 2
+            r = 0
         self.h +=1
         self.state = next_state
         obs = self.make_obs(self.state)
@@ -134,9 +136,7 @@ class LockBernoulli(gym.Env):
         else:
             new_x = np.zeros((self.observation_space.n,))
             new_x[s] = 1
-            # TODO
             new_x[3:] = np.random.binomial(1,0.5,(self.dimension,))
-#            new_x[3:] = gym.spaces.np_random.binomial(1,0.5,(self.dimension,))
             return new_x
 
     def trim_observation(self,o,h):
@@ -162,10 +162,8 @@ class LockBernoulli(gym.Env):
     def close(self):
         pass
 
-    def seed(self, seed=None):
-        pass
-#        gym.seed(seed)
-#        gym.spaces.prng.seed(seed)
+    def seed(self, seed):
+        self.rng = np.random.RandomState(seed)
 
 if __name__=='__main__':
     env = LockBernoulli()
@@ -177,8 +175,6 @@ if __name__=='__main__':
         while not done:
             env.render()
             print(env.trim_observation(o,h))
-            # TODO
             (o,r,done,blah) = env.step(np.random.randint(low=0,high=env.action_space.n,size=1))
-#            (o,r,done,blah) = env.step(gym.spaces.np_random.randint(low=0,high=env.action_space.n,size=1))
             h += 1
         print("End of episode: r=%d" % (r))

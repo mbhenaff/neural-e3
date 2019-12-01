@@ -27,6 +27,7 @@ def parse_environment_params(args):
     ep_dict = {'horizon': args.horizon,
                'dimension': args.dimension,
                'antishaping': args.antishaping,
+               'seed': args.seed,
                'tabular': args.tabular}
     if args.env_param_1 is not None:
         ep_dict['switch'] = float(args.env_param_1)
@@ -40,7 +41,7 @@ def parse_environment_params(args):
 def get_env(name, args):
     env = gym.make(name)
     ep_dict = parse_environment_params(args)
-    env.seed(args.seed+args.iteration*31)
+    env.seed(args.seed)
     env.init(env_config=ep_dict)
     return(env)
 
@@ -58,6 +59,8 @@ def get_alg(name, args, env):
                     'n_playouts': args.n_playouts,
                     'n_samples': args.n_samples,
                     'n_model_updates': args.n_model_updates,
+                    'ucb_c': args.ucb_c,
+                    'anchor': args.anchor,
                     'lr': args.lr,
                     'batch_size': 100, 
                     'n_actions': env.action_space.n,
@@ -102,20 +105,24 @@ def parse_args():
                         help='Dimension')
     parser.add_argument('--tabular', type=bool, default=False,
                         help='Make environment tabular')
-    parser.add_argument('--episodes', type=int, default=10000,
+    parser.add_argument('--episodes', type=int, default=5000,
                         help='Training Episodes')
     parser.add_argument('--episodes_exp_ratio', type=int, default=100,
                         help='Exploration Episodes divided by horizon')
-    parser.add_argument('--n_ensemble', type=int, default=10,
+    parser.add_argument('--n_ensemble', type=int, default=5,
                         help='Ensemble size')
-    parser.add_argument('--n_playouts', type=int, default=100,
+    parser.add_argument('--n_playouts', type=int, default=200,
                         help='playouts')
-    parser.add_argument('--n_samples', type=int, default=20,
+    parser.add_argument('--n_samples', type=int, default=100,
                         help='samples')
     parser.add_argument('--n_model_updates', type=int, default=100,
                         help='updates')
     parser.add_argument('--n_hidden', type=int, default=50,
                         help='hiddens')
+    parser.add_argument('--ucb_c', type=float, default=1.0,
+                        help='UCB coefficient')
+    parser.add_argument('--exploit_method', type=str, default='exploit-dqn')
+    parser.add_argument('--anchor', type=int, default=0)
     parser.add_argument('--env_param_1', type=str,
                         help='Additional Environment Parameters (Switching prob)', default=None)
     parser.add_argument('--env_param_2', type=str,
@@ -134,6 +141,9 @@ def parse_args():
                         help="Data collection parameter for decoding algoithm.")
     parser.add_argument('--num_cluster', type=int, default = 3,
                         help="Num of hidden state parameter for decoding algoithm.")
+    parser.add_argument('--uniform_explore', type=int, default = 0,
+                        help="Uniform exploration")
+    parser.add_argument('--load_prev_replay_data', type=str, default = '/home/mihenaff/projects/model_based_exploration/code/combolock/exp_stochlock_ucb_tuning/search_exp_stochlock_ucb_tuning_abct/alg=neural-e3-h=10-dim=10-lr=0.01-playouts=200-ucb=1.0-samples=100-nh=50-nup=100-epexp=75-uexpl=0-antishape=0.1-seed=1/results.pth')
     parser.add_argument('--antishaping', type=float, default = 0.0,
                         help="Antishaped Reward")
     args = parser.parse_args()
@@ -142,7 +152,8 @@ def parse_args():
 def train(env, alg, args):
     T = args.episodes
     if args.system == 'local' or args.system == 'gcr':
-        args.results_dir = '/nycml/mihenaff/results/' + args.results_dir
+#        args.results_dir = '/nycml/mihenaff/results/' + args.results_dir
+        args.results_dir = 'tmp/' + args.results_dir
     elif args.system == 'philly':
         args.results_dir = os.getenv('PT_OUTPUT_DIR') + '/'
     
@@ -151,14 +162,20 @@ def train(env, alg, args):
     experiment_name += f'-dim={args.dimension}'
     experiment_name += f'-lr={args.lr}'
     experiment_name += f'-playouts={args.n_playouts}'
+    experiment_name += f'-ucb={args.ucb_c}'
     experiment_name += f'-samples={args.n_samples}'
     experiment_name += f'-nh={args.n_hidden}'
+    experiment_name += f'-ens={args.n_ensemble}'
     experiment_name += f'-nup={args.n_model_updates}'
     experiment_name += f'-epexp={args.episodes_exp_ratio}'
+    experiment_name += f'-uexpl={args.uniform_explore}'
+    experiment_name += f'-antishape={args.antishaping}'
+    experiment_name += f'-anchor={args.anchor}'
     experiment_name += f'-seed={args.seed}'
 
     print(f'will save as {experiment_name}')
     experiment_name = args.results_dir + f'/{experiment_name}'
+    trajectories = []
 
     if os.path.isfile(experiment_name + '/results.pth'):
         print(f'checkpoint found: {experiment_name}/results.pth')
@@ -177,21 +194,33 @@ def train(env, alg, args):
         state_visitation = np.zeros((3, args.horizon))
         ep_rewards = []
         t = 1
+
+        
     while t < T+1:
         state = env.reset()
-        if t <= args.episodes_exp_ratio * args.horizon:
+        current_traj = []
+        if t < args.episodes_exp_ratio * args.horizon:
             alg.mode = 'explore'
-        else:
-            alg.mode = 'exploit'
+        elif t == args.episodes_exp_ratio * args.horizon:
+            alg.mode = args.exploit_method
+            if args.exploit_method == 'exploit-dqn':
+                alg.train_dqn()
+        elif t > args.episodes_exp_ratio * args.horizon:
+            alg.mode = args.exploit_method
+            if args.exploit_method == 'exploit-dqn':
+                alg.train_dqn(n_updates=2000)
         done = False
         level = 0
         ep_reward = 0
         while not done:
             state_visitation[:, level] += state[:3]
-            if args.alg == 'neural-e3':
-                action = alg.select_action(state, level)
+            if args.uniform_explore == 1 and alg.mode == 'explore':
+                action = random.randint(0, 3)
             else:
-                action = alg.select_action(state)
+                if args.alg == 'neural-e3':
+                    action = alg.select_action(state, level)
+                else:
+                    action = alg.select_action(state)
             next_state, reward, done, _ = env.step(action)
             if args.alg in ['neural-e3', 'uniform']:
                 alg.save_transition(state, action, reward, next_state, level)
@@ -206,21 +235,26 @@ def train(env, alg, args):
         log_string = f'ep {t} ({alg.mode}) | reward: {ep_reward}, running reward: {running_reward}'
         logtxt(f'{experiment_name}/output.log', log_string)
         logtxt(f'{experiment_name}/output.log', np.array2string(state_visitation))
-        torch.save(ep_rewards, f'{experiment_name}/perf.pth')
-        torch.save({'alg': alg, 'env': env}, f'{experiment_name}/alg_ep{t}.pth')
-        checkpoint_data = {'alg': alg,
-                           'env': env,
-                           'running_reward': running_reward,
-                           'state_visitation': state_visitation,
-                           'reward_vec': reward_vec,
-                           'ep_rewards': ep_rewards,
-                           't': t
-                           }
-        torch.save(checkpoint_data, f'{experiment_name}/results.pth')
+        
         print(log_string)
         print(state_visitation)
         if t % 100 == 0:
+            print(np.mean(ep_rewards[-10:]))
             reward_vec.append(running_reward)
+
+            torch.save(ep_rewards, f'{experiment_name}/perf.pth')
+            torch.save({'alg': alg, 'env': env}, f'{experiment_name}/alg_ep{t}.pth')
+            checkpoint_data = {'alg': alg,
+                               'env': env,
+                               'running_reward': running_reward,
+                               'state_visitation': state_visitation,
+                               'reward_vec': reward_vec,
+                               'ep_rewards': ep_rewards,
+                               't': t
+            }
+            torch.save(checkpoint_data, f'{experiment_name}/results.pth')
+
+            
         if t % 1000 == 0:
             log_string = "[EXPERIMENT] Episode %d Completed. Average reward: %0.2f" % (t, running_reward/t)
             logtxt(experiment_name + '/output.log', log_string)
