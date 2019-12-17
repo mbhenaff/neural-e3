@@ -3,7 +3,6 @@ import numpy as np
 import gym
 import logging
 import copy
-from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
